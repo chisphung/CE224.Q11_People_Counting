@@ -1,0 +1,241 @@
+import os
+import sys
+import base64
+import tempfile
+import uuid
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
+from fastapi.responses import FileResponse
+
+# Add infra path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+from ultralytics import YOLO
+import cv2
+import numpy as np
+
+from schema.count_people import (
+    CountPeopleRequest,
+    CountPeopleResponse,
+    CountPeopleFromImageRequest,
+    Detection,
+)
+
+router = APIRouter()
+
+# Path to weights (relative to infra folder)
+WEIGHTS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "infra",
+    "weights",
+    "yolov11n_ncnn_model"
+)
+
+# Output directory for annotated images
+OUTPUT_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+    "infra",
+    "tmp"
+)
+
+# Ensure output directory exists
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Global model instance (lazy loading)
+_model = None
+
+
+def get_model():
+    """Lazy load the YOLO model."""
+    global _model
+    if _model is None:
+        _model = YOLO(WEIGHTS_PATH)
+    return _model
+
+
+def count_people_from_image(image: np.ndarray, conf: float = 0.25) -> dict:
+    """
+    Count people in an image using YOLO model.
+    
+    Args:
+        image: numpy array (BGR format from cv2)
+        conf: confidence threshold
+        
+    Returns:
+        dict with count and detection details
+    """
+    model = get_model()
+    
+    # Run inference
+    results = model.predict(source=image, conf=conf, device="cpu", verbose=False)
+    
+    detections = []
+    people_count = 0
+    
+    for result in results:
+        boxes = result.boxes
+        if boxes is not None:
+            for i, box in enumerate(boxes):
+                class_id = int(box.cls[0])
+                class_name = result.names[class_id]
+                confidence = float(box.conf[0])
+                bbox = box.xyxy[0].tolist()  # [x1, y1, x2, y2]
+                
+                # Class ID 0 is typically "person" in COCO dataset
+                if class_id == 0 or class_name.lower() == "person":
+                    people_count += 1
+                
+                detections.append(Detection(
+                    class_id=class_id,
+                    class_name=class_name,
+                    confidence=confidence,
+                    bbox=bbox
+                ))
+    
+    # Get annotated image
+    annotated_image = results[0].plot() if results else image
+    
+    return {
+        "people_count": people_count,
+        "detections": detections,
+        "annotated_image": annotated_image
+    }
+
+
+@router.post("/count", response_model=CountPeopleResponse)
+async def count_people_endpoint(request: CountPeopleRequest):
+    """
+    Count people in an image or video source.
+    
+    Supports:
+    - Local image/video file paths
+    - Camera index (e.g., "0")
+    - Stream URLs (rtsp/http)
+    """
+    try:
+        source = request.source
+        
+        # Check if source is a file and exists
+        if not source.startswith(("rtsp://", "http://", "https://")) and not source.isdigit():
+            if not os.path.exists(source):
+                raise HTTPException(status_code=404, detail=f"Source file not found: {source}")
+        
+        # Read image
+        if source.isdigit():
+            # Camera source - capture single frame
+            cap = cv2.VideoCapture(int(source))
+            ret, frame = cap.read()
+            cap.release()
+            if not ret:
+                raise HTTPException(status_code=500, detail="Failed to capture from camera")
+            image = frame
+        else:
+            image = cv2.imread(source)
+            if image is None:
+                raise HTTPException(status_code=400, detail=f"Failed to read image from: {source}")
+        
+        # Process image
+        result = count_people_from_image(image, request.conf)
+        
+        # Save annotated image
+        output_filename = f"result_{uuid.uuid4().hex[:8]}.jpg"
+        output_path = os.path.join(OUTPUT_DIR, output_filename)
+        cv2.imwrite(output_path, result["annotated_image"])
+        
+        return CountPeopleResponse(
+            success=True,
+            people_count=result["people_count"],
+            detections=result["detections"],
+            output_image_path=output_path
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/count/upload", response_model=CountPeopleResponse)
+async def count_people_upload(
+    file: UploadFile = File(...),
+    conf: float = Form(default=0.25)
+):
+    """
+    Count people in an uploaded image file.
+    """
+    try:
+        # Read uploaded file
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            raise HTTPException(status_code=400, detail="Failed to decode uploaded image")
+        
+        # Process image
+        result = count_people_from_image(image, conf)
+        
+        # Save annotated image
+        output_filename = f"result_{uuid.uuid4().hex[:8]}.jpg"
+        output_path = os.path.join(OUTPUT_DIR, output_filename)
+        cv2.imwrite(output_path, result["annotated_image"])
+        
+        return CountPeopleResponse(
+            success=True,
+            people_count=result["people_count"],
+            detections=result["detections"],
+            output_image_path=output_path
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/count/base64", response_model=CountPeopleResponse)
+async def count_people_base64(request: CountPeopleFromImageRequest):
+    """
+    Count people in a base64 encoded image.
+    """
+    try:
+        # Decode base64 image
+        image_data = base64.b64decode(request.image_base64)
+        nparr = np.frombuffer(image_data, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            raise HTTPException(status_code=400, detail="Failed to decode base64 image")
+        
+        # Process image
+        result = count_people_from_image(image, request.conf)
+        
+        # Save annotated image
+        output_filename = f"result_{uuid.uuid4().hex[:8]}.jpg"
+        output_path = os.path.join(OUTPUT_DIR, output_filename)
+        cv2.imwrite(output_path, result["annotated_image"])
+        
+        return CountPeopleResponse(
+            success=True,
+            people_count=result["people_count"],
+            detections=result["detections"],
+            output_image_path=output_path
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/result/{filename}")
+async def get_result_image(filename: str):
+    """
+    Retrieve an annotated result image by filename.
+    """
+    file_path = os.path.join(OUTPUT_DIR, filename)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Result image not found")
+    
+    return FileResponse(file_path, media_type="image/jpeg")
