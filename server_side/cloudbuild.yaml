@@ -1,5 +1,7 @@
 # Cloud Build configuration for People Counting API Backend
 # Builds and deploys to Cloud Run
+#
+# Run from repo root: gcloud builds submit --config server_side/cloudbuild.yaml
 
 steps:
   # Build the Docker image
@@ -11,8 +13,8 @@ steps:
       - "-t"
       - "gcr.io/$PROJECT_ID/people-counting-api:latest"
       - "-f"
-      - "Dockerfile"
-      - "."
+      - "server_side/Dockerfile"
+      - "server_side"
     timeout: "1200s"
 
   # Push the Docker image to Container Registry
