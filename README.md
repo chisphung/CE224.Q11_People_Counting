@@ -1,6 +1,6 @@
 # CE224.Q11 - People Counting System
 
-A real-time people counting application powered by YOLOv11, featuring ESP32-CAM integration, edge computing with WebSocket streaming, FastAPI backend, and Next.js frontend with live bounding box visualization.
+A real-time people counting application powered by YOLOv11 and WiFi CSI (Channel State Information), featuring ESP32-CAM integration, edge computing with WebSocket streaming, FastAPI backend, and Next.js frontend with live bounding box visualization.
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green?logo=fastapi)
@@ -16,6 +16,7 @@ A real-time people counting application powered by YOLOv11, featuring ESP32-CAM 
 - [Project Structure](#-project-structure)
 - [Installation](#-installation)
 - [Usage](#-usage)
+- [CSI People Counting](#-csi-people-counting)
 - [API Documentation](#-api-documentation)
 - [Dataset](#-dataset)
 - [Contributing](#-contributing)
@@ -24,13 +25,14 @@ A real-time people counting application powered by YOLOv11, featuring ESP32-CAM 
 ## ✨ Features
 
 - **Real-time People Detection**: Utilizes YOLOv11 for accurate people counting
+- **WiFi CSI Sensing**: Non-visual human detection using WiFi signal variations
+- **Multi-Modal Fusion**: Combines camera and CSI for improved accuracy
 - **ESP32-CAM Integration**: Wireless camera streaming via WebSocket
 - **Edge Computing**: On-device YOLO inference for low-latency processing
 - **Live Video Streaming**: Real-time annotated video feed with bounding boxes
+- **ML Model Training**: Train custom CSI models for people counting
 - **Web Interface**: Modern, responsive UI built with Next.js and Tailwind CSS
 - **RESTful API**: FastAPI backend with automatic OpenAPI documentation
-- **Multiple Input Sources**: Support for images, video files, webcam, and RTSP streams
-- **Statistics Dashboard**: Track detection history and metrics
 - **NCNN Model Support**: Optimized model for CPU inference on edge devices
 
 ## 🏗 Architecture
@@ -39,18 +41,24 @@ A real-time people counting application powered by YOLOv11, featuring ESP32-CAM 
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │                 │     │                 │     │                 │     │                 │
 │   ESP32-CAM     │────▶│  Edge Device    │────▶│  FastAPI Server │────▶│  Next.js GUI    │
-│   (WebSocket)   │     │  (YOLO Infer)   │     │  (Port 8000)    │     │  (Port 3000)    │
+│  Camera + CSI   │     │  (YOLO Infer)   │     │  (Port 8000)    │     │  (Port 3000)    │
 │   Port 8080     │     │  ws_server.py   │     │                 │     │                 │
 │                 │     │                 │     │                 │     │                 │
 └─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘
+                                │                       │
+                                │                       ▼
+                                │               ┌─────────────────┐
+                                └──────────────▶│  CSI Training   │
+                                  CSI Data      │  (ML Models)    │
+                                                └─────────────────┘
 ```
 
 ### Data Flow
 
-1. **ESP32-CAM** captures JPEG frames and sends via WebSocket to port 8080
-2. **Edge Device** (`ws_server.py`) receives frames, runs YOLOv11 inference
-3. **Server** receives counting results + annotated frames via REST API
-4. **Frontend** polls server for live stream and displays real-time video
+1. **ESP32-CAM** captures JPEG frames + CSI data, sends via WebSocket
+2. **Edge Device** (`ws_server.py`) receives frames, runs YOLOv11, forwards CSI
+3. **Server** stores CSI data for training, serves results to frontend
+4. **Frontend** displays live video stream with real-time counting
 
 ## 📁 Project Structure
 
@@ -59,36 +67,37 @@ CE224.Q11_People_Counting/
 ├── edge_side/
 │   ├── camera/                    # ESP32-CAM Firmware
 │   │   ├── main/
-│   │   │   ├── main.c            # Camera capture & WebSocket client
+│   │   │   ├── main.c            # Camera + CSI capture & WebSocket
 │   │   │   └── camera_pins.h     # Hardware pin definitions
-│   │   ├── CMakeLists.txt
-│   │   └── sdkconfig
+│   │   ├── sdkconfig             # CSI enabled configuration
+│   │   └── CMakeLists.txt
 │   │
 │   └── infra/                     # Edge ML Infrastructure
 │       ├── ws_server.py          # WebSocket server + YOLO inference
+│       ├── train_csi_model.py    # CSI ML model training script
 │       ├── main.py               # CLI inference script
 │       ├── weights/              # Model weights
 │       │   └── yolov11n_ncnn_model/
-│       ├── dataset/              # Training data
+│       ├── csi_data/             # CSI training data
+│       │   └── training_data.jsonl
 │       └── tmp/                  # Temporary output
 │
 ├── server_side/
 │   ├── backend/                   # FastAPI Backend
 │   │   ├── main.py               # Application entry
 │   │   ├── routers/
-│   │   │   └── count_people.py   # API endpoints
+│   │   │   ├── count_people.py   # Camera counting endpoints
+│   │   │   └── csi.py            # CSI data endpoints
 │   │   └── schema/               # Pydantic models
-│   │       └── count_people.py
 │   │
 │   └── frontend/                  # Next.js Frontend
 │       ├── src/
 │       │   ├── app/
 │       │   │   └── page.tsx      # Main page with live stream
 │       │   ├── components/
-│       │   │   ├── LiveVideoStream.tsx  # Real-time video display
+│       │   │   ├── LiveVideoStream.tsx
 │       │   │   ├── BoundingBoxCanvas.tsx
-│       │   │   ├── ImageUploader.tsx
-│       │   │   └── StatsPanel.tsx
+│       │   │   └── ...
 │       │   └── types/
 │       └── package.json
 │
@@ -114,12 +123,10 @@ cd CE224.Q11_People_Counting
 ### 2. Set Up Python Environment
 
 ```bash
-# Create virtual environment
 python -m venv .venv
 source .venv/bin/activate  # Linux/Mac
 # .venv\Scripts\activate   # Windows
 
-# Install dependencies
 pip install -r requirements.txt
 ```
 
@@ -130,7 +137,7 @@ cd server_side/frontend
 npm install
 ```
 
-### 4. Set Up ESP32-CAM (Optional)
+### 4. Set Up ESP32-CAM
 
 ```bash
 cd edge_side/camera
@@ -150,7 +157,7 @@ python main.py
 
 # Terminal 2: Start the edge WebSocket server
 cd edge_side/infra
-python ws_server.py --display  # --display to see local preview
+python ws_server.py --display  # --display for local preview
 
 # Terminal 3: Start the frontend
 cd server_side/frontend
@@ -159,101 +166,97 @@ npm run dev
 # Power on ESP32-CAM (connects automatically)
 ```
 
-Open `http://localhost:3000` to see the live video stream with people counting.
+Open `http://localhost:3000` for live video stream with people counting.
 
-### Option 2: Backend API Only
-
-```bash
-cd server_side/backend
-python main.py
-# API available at http://localhost:8000
-```
-
-### Option 3: CLI Inference (No server required)
+### Option 2: CLI Inference
 
 ```bash
 cd edge_side/infra
 
-# Process a single image
+# Process image
 python main.py --source path/to/image.jpg --out tmp/result.jpg
-
-# Process video
-python main.py --source path/to/video.mp4 --out-dir ./frames
 
 # Use webcam
 python main.py --source 0 --out tmp/latest.jpg
 ```
 
-### Edge WebSocket Server Options
+## 📡 CSI People Counting
 
-| Option            | Default                       | Description                               |
-| ----------------- | ----------------------------- | ----------------------------------------- |
-| `--port`          | 8080                          | WebSocket server port                     |
-| `--server`        | `http://localhost:8000`       | Backend server URL                        |
-| `--weights`       | `weights/yolov11n_ncnn_model` | Path to model weights                     |
-| `--conf`          | 0.25                          | Confidence threshold                      |
-| `--device`        | `cpu`                         | Device (`cpu` or `cuda:0`)                |
-| `--display`       | False                         | Display annotated frames locally          |
-| `--send-interval` | 1.0                           | Interval between server updates (seconds) |
+WiFi CSI (Channel State Information) enables non-visual human detection by analyzing WiFi signal variations caused by human presence.
+
+### How It Works
+
+1. **ESP32 collects CSI** data from WiFi packets
+2. **Edge server forwards** CSI + camera count to backend
+3. **Server stores** CSI data with camera-based labels
+4. **Train ML model** to predict people count from CSI alone
+
+### Collecting Training Data
+
+```bash
+# Start full pipeline (server + edge + ESP32)
+# CSI data auto-saves to: edge_side/infra/csi_data/training_data.jsonl
+
+# Check collection stats
+curl http://localhost:8000/api/v1/csi/stats
+```
+
+### Training a CSI Model
+
+```bash
+cd edge_side/infra
+
+# Random Forest (recommended)
+python train_csi_model.py \
+    --data csi_data/training_data.jsonl \
+    --model rf \
+    --output csi_model.pkl
+
+# Neural Network
+python train_csi_model.py --data csi_data/training_data.jsonl --model nn
+
+# Gradient Boosting
+python train_csi_model.py --data csi_data/training_data.jsonl --model gb
+```
+
+### CSI Features Extracted
+
+| Feature      | Description                        |
+| ------------ | ---------------------------------- |
+| Statistical  | Mean, std, min, max, median, range |
+| Quartiles    | 25th, 75th percentile              |
+| Higher-order | Skewness, kurtosis                 |
+| Energy       | Sum and mean of squared amplitudes |
+| Variance     | Per-segment variance               |
+| Frequency    | FFT-based features                 |
+| RSSI         | Signal strength                    |
 
 ## 📚 API Documentation
 
-### Endpoints
+### Camera Endpoints
 
-| Method | Endpoint                    | Description                                     |
-| ------ | --------------------------- | ----------------------------------------------- |
-| `GET`  | `/`                         | API information                                 |
-| `GET`  | `/health`                   | Health check                                    |
-| `POST` | `/api/v1/count`             | Count people from file path/URL                 |
-| `POST` | `/api/v1/count/upload`      | Count people from uploaded image                |
-| `POST` | `/api/v1/count/base64`      | Count people from base64 image                  |
-| `POST` | `/api/v1/count/edge`        | Receive count from edge device                  |
-| `GET`  | `/api/v1/count/latest`      | Get latest count from edge                      |
-| `GET`  | `/api/v1/count/history`     | Get counting history                            |
-| `GET`  | `/api/v1/stream/frame`      | Get latest annotated frame (for live streaming) |
-| `GET`  | `/api/v1/result/{filename}` | Get annotated result image                      |
+| Method | Endpoint               | Description               |
+| ------ | ---------------------- | ------------------------- |
+| `POST` | `/api/v1/count`        | Count from file/URL       |
+| `POST` | `/api/v1/count/upload` | Count from uploaded image |
+| `POST` | `/api/v1/count/edge`   | Receive from edge device  |
+| `GET`  | `/api/v1/count/latest` | Latest count              |
+| `GET`  | `/api/v1/stream/frame` | Live frame for streaming  |
 
-### Example: Upload Image
+### CSI Endpoints
 
-```bash
-curl -X POST "http://localhost:8000/api/v1/count/upload" \
-  -F "file=@image.jpg" \
-  -F "conf=0.25"
-```
+| Method | Endpoint                    | Description           |
+| ------ | --------------------------- | --------------------- |
+| `POST` | `/api/v1/csi/data`          | Receive CSI data      |
+| `GET`  | `/api/v1/csi/stats`         | Collection statistics |
+| `GET`  | `/api/v1/csi/buffer`        | Recent CSI samples    |
+| `GET`  | `/api/v1/csi/training-data` | Training file info    |
 
-### Example: Get Live Count
-
-```bash
-curl "http://localhost:8000/api/v1/count/latest"
-```
-
-### Example Response
-
-```json
-{
-  "success": true,
-  "people_count": 5,
-  "detections": [
-    {
-      "class_id": 0,
-      "class_name": "person",
-      "confidence": 0.92,
-      "bbox": [100, 150, 250, 450]
-    }
-  ],
-  "timestamp": "2025-12-25T10:30:00",
-  "camera_id": "esp32_cam"
-}
-```
-
-Interactive API documentation:
-
-- **Swagger UI**: `http://localhost:8000/docs`
-- **ReDoc**: `http://localhost:8000/redoc`
+Interactive docs: `http://localhost:8000/docs`
 
 ## 📊 Dataset
 
-The model is trained on a custom people counting dataset from Roboflow:
+Camera model trained on custom people counting dataset from Roboflow:
 
 - **Classes**: 1 (`people`)
 - **Source**: [Roboflow Universe](https://universe.roboflow.com/chris-3k2jo/people_counting-lqqio/dataset/3)
@@ -263,51 +266,39 @@ The model is trained on a custom people counting dataset from Roboflow:
 
 ### Hardware
 
-- **ESP32-CAM** - Wi-Fi camera module with OV2640 sensor
+- **ESP32-CAM** - Wi-Fi camera with CSI support
 
 ### Edge Computing
 
-- **ESP-IDF** - Espressif IoT Development Framework
-- **WebSockets** - Real-time bidirectional communication
-- **Ultralytics** - YOLOv11 implementation
-- **NCNN** - Optimized inference for edge devices
+- **WiFi CSI** - Channel State Information for human sensing
+- **YOLOv11** - Object detection
+- **NCNN** - Optimized inference
 
 ### Backend
 
-- **FastAPI** - Modern Python web framework
-- **OpenCV** - Image processing
-- **Pydantic** - Data validation
+- **FastAPI** - Python web framework
+- **scikit-learn** - ML model training
 
 ### Frontend
 
-- **Next.js 14** - React framework with App Router
-- **TypeScript** - Type-safe JavaScript
-- **Tailwind CSS** - Utility-first CSS
+- **Next.js 14** - React framework
+- **Tailwind CSS** - Styling
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
-
 1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+2. Create feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit changes (`git commit -m 'Add AmazingFeature'`)
+4. Push to branch (`git push origin feature/AmazingFeature`)
+5. Open Pull Request
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE) file.
 
 ## 👥 Authors
 
 - **Chi Phung** - [GitHub](https://github.com/chisphung)
-
-## 🙏 Acknowledgments
-
-- [Ultralytics](https://ultralytics.com/) for YOLOv11
-- [Roboflow](https://roboflow.com/) for dataset hosting
-- [Espressif](https://www.espressif.com/) for ESP32-CAM
-- [Vercel](https://vercel.com/) for Next.js
 
 ---
 

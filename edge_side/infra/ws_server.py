@@ -196,6 +196,36 @@ async def send_to_server(server_url: str, result: dict) -> bool:
         return False
 
 
+async def send_csi_to_server(server_url: str, csi_data: dict, people_count: int) -> bool:
+    """Send CSI data to the backend server for storage and training."""
+    endpoint = f"{server_url}/api/v1/csi/data"
+    
+    payload = {
+        "timestamp": csi_data.get("timestamp"),
+        "rssi": csi_data.get("rssi"),
+        "amplitudes": csi_data.get("amplitudes", []),
+        "people_count": people_count,  # Ground truth from camera
+        "subcarrier_count": len(csi_data.get("amplitudes", []))
+    }
+    
+    try:
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: requests.post(endpoint, json=payload, timeout=5)
+        )
+        
+        if response.status_code == 200:
+            return True
+        else:
+            print(f"[CSI Server] Error response: {response.status_code}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"[CSI Server] Connection error: {e}")
+        return False
+
+
 async def handle_client(
     ws: websockets.WebSocketServerProtocol,
     counter: PeopleCounter,
@@ -270,10 +300,18 @@ async def handle_client(
                     last_send_time = current_time
                     
             else:
-                # Handle JSON responses from ESP32
+                # Handle JSON data from ESP32 (CSI data or responses)
                 try:
-                    response = json.loads(msg)
-                    print(f"[ESP32 Response] {response}")
+                    data = json.loads(msg)
+                    
+                    # Check if this is CSI data
+                    if data.get("type") == "csi":
+                        # Forward CSI data to server
+                        await send_csi_to_server(server_url, data, latest_count.get("people_count", 0))
+                        print(f"[CSI] Received CSI data with {len(data.get('amplitudes', []))} subcarriers, RSSI: {data.get('rssi')}")
+                    else:
+                        print(f"[ESP32 Response] {data}")
+                        
                 except json.JSONDecodeError:
                     print(f"[ESP32 Text] {msg}")
     

@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
+#include <math.h>
 #include "esp_camera.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -15,17 +17,136 @@
 #include "cJSON.h"
 #include "camera_pins.h"
 #include "sensor.h"
-#include <string.h>
 
 #define WIFI_SSID "nhmc"
 #define WIFI_PASS "14112005"
 #define SERVER_URI "ws://192.168.137.1:8080"
+
+// CSI Configuration
+#define CSI_SEND_INTERVAL_MS 500  // Send CSI data every 500ms
+#define CSI_BUFFER_SIZE 128       // Number of subcarriers
 
 static const char *TAG = "ESP32CAM";
 static esp_websocket_client_handle_t ws;
 static EventGroupHandle_t s_wifi_event_group;
 
 #define WIFI_CONNECTED_BIT BIT0
+
+// CSI data storage
+static int8_t csi_data_buffer[CSI_BUFFER_SIZE * 2];  // *2 for I/Q components
+static int csi_data_len = 0;
+static uint32_t csi_timestamp = 0;
+static int8_t csi_rssi = 0;
+static SemaphoreHandle_t csi_mutex = NULL;
+
+/* ---------------- CSI CALLBACK ---------------- */
+static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
+{
+    if (!info || !info->buf || info->len == 0)
+    {
+        return;
+    }
+
+    if (xSemaphoreTake(csi_mutex, pdMS_TO_TICKS(10)) == pdTRUE)
+    {
+        // Store CSI data (limited to buffer size)
+        int copy_len = (info->len < CSI_BUFFER_SIZE * 2) ? info->len : CSI_BUFFER_SIZE * 2;
+        memcpy(csi_data_buffer, info->buf, copy_len);
+        csi_data_len = copy_len;
+        csi_timestamp = esp_log_timestamp();
+        csi_rssi = info->rx_ctrl.rssi;
+        
+        xSemaphoreGive(csi_mutex);
+    }
+}
+
+static void csi_init(void)
+{
+    csi_mutex = xSemaphoreCreateMutex();
+    if (!csi_mutex)
+    {
+        ESP_LOGE(TAG, "Failed to create CSI mutex");
+        return;
+    }
+
+    wifi_csi_config_t csi_config = {
+        .lltf_en = true,           // Enable LLTF (Long Training Field)
+        .htltf_en = true,          // Enable HTLTF (HT Long Training Field)
+        .stbc_htltf2_en = true,    // Enable STBC HT-LTF2
+        .ltf_merge_en = true,      // Enable LTF merge
+        .channel_filter_en = false, // Don't filter by channel
+        .manu_scale = false,       // Don't scale manually
+        .shift = 0,                // No shift
+    };
+
+    ESP_ERROR_CHECK(esp_wifi_set_csi_config(&csi_config));
+    ESP_ERROR_CHECK(esp_wifi_set_csi_rx_cb(&wifi_csi_rx_cb, NULL));
+    ESP_ERROR_CHECK(esp_wifi_set_csi(true));
+
+    ESP_LOGI(TAG, "CSI initialized and enabled");
+}
+
+static bool send_csi_data(void)
+{
+    if (!ws || !esp_websocket_client_is_connected(ws))
+    {
+        return false;
+    }
+
+    if (xSemaphoreTake(csi_mutex, pdMS_TO_TICKS(10)) != pdTRUE)
+    {
+        return false;
+    }
+
+    if (csi_data_len == 0)
+    {
+        xSemaphoreGive(csi_mutex);
+        return false;
+    }
+
+    // Create JSON object for CSI data
+    cJSON *csi_obj = cJSON_CreateObject();
+    if (!csi_obj)
+    {
+        xSemaphoreGive(csi_mutex);
+        return false;
+    }
+
+    cJSON_AddStringToObject(csi_obj, "type", "csi");
+    cJSON_AddNumberToObject(csi_obj, "timestamp", csi_timestamp);
+    cJSON_AddNumberToObject(csi_obj, "rssi", csi_rssi);
+    cJSON_AddNumberToObject(csi_obj, "len", csi_data_len);
+
+    // Create array for CSI amplitude data
+    cJSON *amplitudes = cJSON_CreateArray();
+    if (amplitudes)
+    {
+        // Calculate amplitude from I/Q pairs: amp = sqrt(I^2 + Q^2)
+        for (int i = 0; i < csi_data_len / 2; i++)
+        {
+            int8_t real = csi_data_buffer[i * 2];
+            int8_t imag = csi_data_buffer[i * 2 + 1];
+            float amplitude = sqrtf((float)(real * real + imag * imag));
+            cJSON_AddItemToArray(amplitudes, cJSON_CreateNumber((int)amplitude));
+        }
+        cJSON_AddItemToObject(csi_obj, "amplitudes", amplitudes);
+    }
+
+    // Send JSON via WebSocket
+    char *payload = cJSON_PrintUnformatted(csi_obj);
+    bool success = false;
+    if (payload)
+    {
+        int sent = esp_websocket_client_send_text(ws, payload, strlen(payload), portMAX_DELAY);
+        success = (sent >= 0);
+        free(payload);
+    }
+
+    cJSON_Delete(csi_obj);
+    xSemaphoreGive(csi_mutex);
+
+    return success;
+}
 
 /* ---------------- UTILITIES ---------------- */
 static bool send_ws_json(cJSON *obj)
@@ -476,6 +597,10 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(nvs_ret);
     ESP_ERROR_CHECK(wifi_init_sta());
+    
+    // Initialize CSI after WiFi is connected
+    csi_init();
+    
     camera_init();
 
     esp_websocket_client_config_t ws_cfg = {.uri = SERVER_URI};
@@ -494,6 +619,8 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "WebSocket client started: %s", SERVER_URI);
 
+    uint32_t last_csi_send = 0;
+
     while (true)
     {
         if (!esp_websocket_client_is_connected(ws))
@@ -503,6 +630,7 @@ void app_main(void)
             continue;
         }
 
+        // Send camera frame
         camera_fb_t *fb = esp_camera_fb_get();
         if (fb)
         {
@@ -516,6 +644,17 @@ void app_main(void)
         else
         {
             ESP_LOGW(TAG, "Failed to get camera frame buffer");
+        }
+
+        // Send CSI data periodically
+        uint32_t now = esp_log_timestamp();
+        if (now - last_csi_send >= CSI_SEND_INTERVAL_MS)
+        {
+            if (send_csi_data())
+            {
+                ESP_LOGD(TAG, "CSI data sent");
+            }
+            last_csi_send = now;
         }
 
         vTaskDelay(pdMS_TO_TICKS(50)); // ~20 FPS when streaming
