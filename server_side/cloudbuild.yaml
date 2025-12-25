@@ -28,7 +28,7 @@ steps:
       - "push"
       - "gcr.io/$PROJECT_ID/people-counting-api:latest"
 
-  # Deploy to Cloud Run
+  # Deploy to Cloud Run with extended startup timeout
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: "gcloud"
     args:
@@ -51,6 +51,7 @@ steps:
       - "--timeout"
       - "300"
       - "--cpu-boost"
+      - "--no-cpu-throttling"
       - "--min-instances"
       - "0"
       - "--max-instances"
@@ -59,7 +60,7 @@ steps:
 # Substitution variables
 substitutions:
   _REGION: "us-central1"
-  _MEMORY: "2Gi"
+  _MEMORY: "4Gi"
   _CPU: "2"
 
 # Build options
