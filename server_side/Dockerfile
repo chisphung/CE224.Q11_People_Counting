@@ -1,8 +1,5 @@
 # People Counting API - Backend Dockerfile
 # Optimized for Google Cloud Run
-# 
-# Build context: server_side/
-# The weights must be copied from edge_side/infra/weights to server_side/infra/weights before building
 
 FROM python:3.11-slim
 
@@ -13,12 +10,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     WEIGHTS_PATH=/app/weights/yolov11n_ncnn_model \
     OUTPUT_DIR=/app/tmp
 
-# Install minimal system dependencies for opencv-headless
+# Install system dependencies including libGL for OpenCV
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender1 \
+    libgl1 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -32,8 +31,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY backend/ ./backend/
 
-# Copy weights from edge_side (must be in build context)
-# Run: cp -r ../edge_side/infra/weights ./weights before building
+# Copy weights
 COPY weights/ ./weights/
 
 # Create directories for temporary files
