@@ -1,5 +1,7 @@
 # Cloud Build configuration for People Counting Frontend
 # Builds and deploys Next.js app to Cloud Run
+#
+# Run from repo root: gcloud builds submit --config server_side/frontend/cloudbuild.yaml
 
 steps:
   # Build the Docker image
@@ -12,7 +14,9 @@ steps:
       - "gcr.io/$PROJECT_ID/people-counting-frontend:latest"
       - "--build-arg"
       - "NEXT_PUBLIC_API_URL=${_API_URL}"
-      - "."
+      - "-f"
+      - "server_side/frontend/Dockerfile"
+      - "server_side/frontend"
     timeout: "600s"
 
   # Push the Docker image to Container Registry
@@ -53,19 +57,18 @@ steps:
       - "--max-instances"
       - "10"
 
-# Substitution variables (MUST override _API_URL)
+# Substitution variables (override _API_URL with your backend URL)
 substitutions:
   _REGION: "us-central1"
-  _API_URL: "https://people-counting-api-xxxxx.run.app" # Override this!
+  _API_URL: "https://people-counting-api-xxxxx.run.app"
 
 # Build options
 options:
   logging: CLOUD_LOGGING_ONLY
 
-# Store images in Container Registry
+# Store images
 images:
   - "gcr.io/$PROJECT_ID/people-counting-frontend:$COMMIT_SHA"
   - "gcr.io/$PROJECT_ID/people-counting-frontend:latest"
 
-# Build timeout (10 minutes)
 timeout: "600s"
