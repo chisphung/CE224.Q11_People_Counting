@@ -28,7 +28,6 @@ router = APIRouter()
 # Path to weights - use environment variable or default
 WEIGHTS_PATH = os.environ.get("WEIGHTS_PATH", os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "infra",
     "weights",
     "yolov11n_ncnn_model"
 ))
@@ -36,7 +35,6 @@ WEIGHTS_PATH = os.environ.get("WEIGHTS_PATH", os.path.join(
 # Output directory for annotated images
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "infra",
     "tmp"
 ))
 
