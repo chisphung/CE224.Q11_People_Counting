@@ -25,20 +25,20 @@ from schema.count_people import (
 
 router = APIRouter()
 
-# Path to weights (relative to infra folder)
-WEIGHTS_PATH = os.path.join(
+# Path to weights - use environment variable or default
+WEIGHTS_PATH = os.environ.get("WEIGHTS_PATH", os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
     "infra",
     "weights",
     "yolov11n_ncnn_model"
-)
+))
 
 # Output directory for annotated images
-OUTPUT_DIR = os.path.join(
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
     "infra",
     "tmp"
-)
+))
 
 # Ensure output directory exists
 os.makedirs(OUTPUT_DIR, exist_ok=True)
