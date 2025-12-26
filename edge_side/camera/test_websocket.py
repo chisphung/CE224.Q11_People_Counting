@@ -16,13 +16,10 @@ clients: set[websockets.WebSocketServerProtocol] = set()
 frame_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=3)
 stop_event = threading.Event()
 
-DEFAULT_CAMERA_SETTINGS = {
-    "brightness": 1,
-    "contrast": 1,
-    "saturation": 1,
-    "quality": 8,
-    "framesize": 5,
-}
+# Camera settings - no longer auto-sent on connect to avoid JSON errors on ESP32
+# Uncomment and modify below if you want to send settings manually:
+# CAMERA_SETTINGS = {"brightness": 1, "contrast": 1, "saturation": 1, "quality": 20}
+DEFAULT_CAMERA_SETTINGS = None  # Set to dict to auto-send on connect
 
 
 def display_loop() -> None:
@@ -104,8 +101,8 @@ async def wait_for_stop() -> None:
 
 
 async def main() -> None:
-    # display_thread = threading.Thread(target=display_loop, daemon=True)
-    # display_thread.start()
+    display_thread = threading.Thread(target=display_loop, daemon=True)
+    display_thread.start()
 
     async with websockets.serve(handle_client, "0.0.0.0", 8080, max_size=None):
         print("[Server] WebSocket running on ws://0.0.0.0:8080")
@@ -114,7 +111,7 @@ async def main() -> None:
         finally:
             stop_event.set()
 
-    # display_thread.join(timeout=1.0)
+    display_thread.join(timeout=1.0)
 
 
 if __name__ == "__main__":

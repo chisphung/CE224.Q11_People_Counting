@@ -18,13 +18,20 @@
 #include "camera_pins.h"
 #include "sensor.h"
 
-#define WIFI_SSID "nhmc"
-#define WIFI_PASS "14112005"
-#define SERVER_URI "ws://10.35.174.129:8080"
+#define WIFI_SSID "lmaoindex"
+#define WIFI_PASS "khongphaiwibu"
+#define SERVER_URI "ws://10.231.182.129:8080"
 
 // CSI Configuration
+#define CSI_ENABLED 1             // Set to 1 to enable CSI data sending, 0 to disable
 #define CSI_SEND_INTERVAL_MS 500  // Send CSI data every 500ms
 #define CSI_BUFFER_SIZE 128       // Number of subcarriers
+
+// WebSocket Configuration
+#define WS_SEND_TIMEOUT_MS 1000   // Timeout for WebSocket sends
+#define FRAME_INTERVAL_MS 100     // ~10 FPS target (was 50ms/20FPS - reduced for stability)
+#define WS_RECONNECT_DELAY_MS 2000 // Wait before reconnecting
+#define MAX_SEND_FAILURES 3       // Consecutive failures before reconnection
 
 static const char *TAG = "ESP32CAM";
 static esp_websocket_client_handle_t ws;
@@ -137,7 +144,7 @@ static bool send_csi_data(void)
     bool success = false;
     if (payload)
     {
-        int sent = esp_websocket_client_send_text(ws, payload, strlen(payload), portMAX_DELAY);
+        int sent = esp_websocket_client_send_text(ws, payload, strlen(payload), pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
         success = (sent >= 0);
         free(payload);
     }
@@ -170,7 +177,7 @@ static bool send_ws_json(cJSON *obj)
         return false;
     }
 
-    int sent = esp_websocket_client_send_text(ws, payload, strlen(payload), portMAX_DELAY);
+    int sent = esp_websocket_client_send_text(ws, payload, strlen(payload), pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
     if (sent < 0)
     {
         ESP_LOGE(TAG, "Failed to send JSON payload over WebSocket");
@@ -411,8 +418,8 @@ static void camera_init(void)
         .ledc_channel = LEDC_CHANNEL_0,
         .pixel_format = PIXFORMAT_JPEG,
         .frame_size = FRAMESIZE_QVGA,
-        .jpeg_quality = 8,
-        .fb_count = 3};
+        .jpeg_quality = 20,  // Higher = more compression = faster transfer (was 8)
+        .fb_count = 2};      // Reduced buffer count for lower memory usage
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK)
         ESP_LOGE(TAG, "Camera init failed 0x%x", err);
@@ -551,8 +558,8 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid, void *dat
 
         if (!updated)
         {
-            ESP_LOGW(TAG, "Received camera command without recognized fields");
-            send_error_response("No supported camera fields in JSON payload");
+            // Gracefully ignore JSON without recognized camera fields (e.g., acks, pings)
+            ESP_LOGD(TAG, "Received JSON without camera config fields, ignoring");
             cJSON_Delete(root);
             free(json);
             return;
@@ -599,7 +606,9 @@ void app_main(void)
     ESP_ERROR_CHECK(wifi_init_sta());
     
     // Initialize CSI after WiFi is connected
+#if CSI_ENABLED
     csi_init();
+#endif
     
     camera_init();
 
@@ -620,24 +629,41 @@ void app_main(void)
     ESP_LOGI(TAG, "WebSocket client started: %s", SERVER_URI);
 
     uint32_t last_csi_send = 0;
+    int consecutive_failures = 0;
 
     while (true)
     {
         if (!esp_websocket_client_is_connected(ws))
         {
-            // Hold off streaming until the websocket handshake completes.
-            vTaskDelay(pdMS_TO_TICKS(100));
+            // Longer wait on disconnect to avoid rapid reconnect cycles
+            ESP_LOGW(TAG, "WebSocket disconnected, waiting %dms before retry...", WS_RECONNECT_DELAY_MS);
+            vTaskDelay(pdMS_TO_TICKS(WS_RECONNECT_DELAY_MS));
+            consecutive_failures = 0;  // Reset on reconnect
             continue;
         }
 
-        // Send camera frame
+        // Send camera frame with timeout (non-blocking if network is slow)
         camera_fb_t *fb = esp_camera_fb_get();
         if (fb)
         {
-            int sent = esp_websocket_client_send_bin(ws, (const char *)fb->buf, fb->len, portMAX_DELAY);
+            int sent = esp_websocket_client_send_bin(ws, (const char *)fb->buf, fb->len, pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
             if (sent < 0)
             {
-                ESP_LOGE(TAG, "Failed to send frame via WebSocket");
+                consecutive_failures++;
+                ESP_LOGW(TAG, "Frame send failed (%d/%d)", consecutive_failures, MAX_SEND_FAILURES);
+                
+                if (consecutive_failures >= MAX_SEND_FAILURES)
+                {
+                    ESP_LOGE(TAG, "Too many failures, forcing reconnection");
+                    esp_websocket_client_close(ws, pdMS_TO_TICKS(500));
+                    vTaskDelay(pdMS_TO_TICKS(WS_RECONNECT_DELAY_MS));
+                    esp_websocket_client_start(ws);
+                    consecutive_failures = 0;
+                }
+            }
+            else
+            {
+                consecutive_failures = 0;  // Reset on success
             }
             esp_camera_fb_return(fb);
         }
@@ -646,6 +672,7 @@ void app_main(void)
             ESP_LOGW(TAG, "Failed to get camera frame buffer");
         }
 
+#if CSI_ENABLED
         // Send CSI data periodically
         uint32_t now = esp_log_timestamp();
         if (now - last_csi_send >= CSI_SEND_INTERVAL_MS)
@@ -656,7 +683,8 @@ void app_main(void)
             }
             last_csi_send = now;
         }
+#endif
 
-        vTaskDelay(pdMS_TO_TICKS(50)); // ~20 FPS when streaming
+        vTaskDelay(pdMS_TO_TICKS(FRAME_INTERVAL_MS)); // ~20 FPS when streaming
     }
 }
