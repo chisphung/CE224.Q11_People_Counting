@@ -20,7 +20,7 @@
 
 #define WIFI_SSID "nhmc"
 #define WIFI_PASS "14112005"
-#define SERVER_URI "ws://192.168.137.1:8080"
+#define SERVER_URI "ws://10.35.174.129:8080"
 
 // CSI Configuration
 #define CSI_SEND_INTERVAL_MS 500  // Send CSI data every 500ms
@@ -289,7 +289,7 @@ static esp_err_t wifi_init_sta(void)
         .sta = {
             .ssid = WIFI_SSID,
             .password = WIFI_PASS,
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+            .threshold.authmode = WIFI_AUTH_OPEN,  // Accept any auth mode (hotspot compatible)
         },
     };
     err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
