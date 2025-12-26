@@ -139,12 +139,64 @@ npm install
 
 ### 4. Set Up ESP32-CAM
 
+#### 4.1 Configure Wi-Fi and Server
+
+Edit `edge_side/camera/main/main.c` and update these defines:
+
+```c
+#define WIFI_SSID "your_wifi_name"      // Your Wi-Fi network name
+#define WIFI_PASS "your_wifi_password"  // Your Wi-Fi password
+#define SERVER_URI "ws://192.168.x.x:8080"  // WebSocket server IP
+```
+
+> **Important**: The `SERVER_URI` must point to the IP address of the machine running `ws_server.py` on the **same network** as the ESP32-CAM.
+
+To find your server IP:
+
+```bash
+# Linux/Mac
+ip addr | grep "inet " | grep -v 127.0.0.1
+# or
+hostname -I
+```
+
+#### 4.2 Build and Flash
+
+**Option A: Using Docker (Recommended)**
+
 ```bash
 cd edge_side/camera
-# Configure Wi-Fi in main/main.c (WIFI_SSID, WIFI_PASS, SERVER_URI)
-idf.py build
-idf.py flash
+
+# Build
+docker run --rm -v $PWD:/project -w /project espressif/idf:v5.3 idf.py build
+
+# Flash (connect ESP32-CAM via USB, hold BOOT button during connection)
+docker run --rm -v $PWD:/project -w /project \
+  --device=/dev/ttyUSB0 --privileged \
+  espressif/idf:v5.3 idf.py -p /dev/ttyUSB0 flash
+
+# Monitor serial output
+docker run --rm -v $PWD:/project -w /project \
+  --device=/dev/ttyUSB0 --privileged -it \
+  espressif/idf:v5.3 idf.py -p /dev/ttyUSB0 monitor
 ```
+
+**Option B: Native ESP-IDF**
+
+```bash
+cd edge_side/camera
+idf.py build
+idf.py -p /dev/ttyUSB0 flash monitor
+```
+
+#### 4.3 Troubleshooting
+
+| Issue                                                 | Solution                                                             |
+| ----------------------------------------------------- | -------------------------------------------------------------------- |
+| `Failed to connect to ESP32: No serial data received` | Hold **BOOT** button while connecting, or during flash command       |
+| `Connection reset by peer` on WebSocket               | Ensure `ws_server.py` is running on the server before powering ESP32 |
+| ESP32 connects to wrong network                       | Verify `WIFI_SSID` and `WIFI_PASS` match exactly (case-sensitive)    |
+| WebSocket timeout                                     | Check firewall: `sudo ufw allow 8080/tcp`                            |
 
 ## 📖 Usage
 
