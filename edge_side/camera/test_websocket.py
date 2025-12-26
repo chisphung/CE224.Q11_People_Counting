@@ -104,8 +104,8 @@ async def wait_for_stop() -> None:
 
 
 async def main() -> None:
-    display_thread = threading.Thread(target=display_loop, daemon=True)
-    display_thread.start()
+    # display_thread = threading.Thread(target=display_loop, daemon=True)
+    # display_thread.start()
 
     async with websockets.serve(handle_client, "0.0.0.0", 8080, max_size=None):
         print("[Server] WebSocket running on ws://0.0.0.0:8080")
@@ -114,7 +114,7 @@ async def main() -> None:
         finally:
             stop_event.set()
 
-    display_thread.join(timeout=1.0)
+    # display_thread.join(timeout=1.0)
 
 
 if __name__ == "__main__":

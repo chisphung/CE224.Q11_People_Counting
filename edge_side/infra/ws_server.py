@@ -28,6 +28,8 @@ import time
 from contextlib import suppress
 from datetime import datetime
 from typing import Optional
+import timm
+
 
 import cv2
 import numpy as np
@@ -41,7 +43,7 @@ from ultralytics import YOLO
 
 # Configuration
 DEFAULT_WS_PORT = 8080
-DEFAULT_SERVER_URL = "http://localhost:8000"
+DEFAULT_SERVER_URL = "https://people-counting-api-304130190385.us-central1.run.app"
 DEFAULT_WEIGHTS = os.path.join(os.path.dirname(__file__), "weights", "yolov11n_ncnn_model")
 
 # Global state
@@ -65,7 +67,9 @@ class PeopleCounter:
     def __init__(self, weights_path: str, conf: float = 0.25, device: str = "cpu"):
         self.conf = conf
         self.device = device
-        self.model: Optional[YOLO] = None
+        # self.model: Optional[YOLO] = None
+        self.model = timm.create_model('mobilenetv3_large_100', pretrained=True)
+        self.model.eval()
         self.weights_path = weights_path
         
     def load_model(self):
@@ -92,7 +96,8 @@ class PeopleCounter:
             source=image,
             conf=self.conf,
             device=self.device,
-            verbose=False
+            verbose=False,
+            batch=10
         )
         
         detections = []
